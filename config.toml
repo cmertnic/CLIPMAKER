@@ -1,0 +1,6 @@
+OPENROUTER_KEY = "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"
+LANG = "ru"
+AUDIO_THRESHOLD = -35
+FRAME_DIFF_THRESHOLD = 8.0
+WHISPER_MODEL = "base"  
+max_workers = "auto"
