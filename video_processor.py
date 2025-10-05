@@ -188,18 +188,60 @@ def analyze_video_advanced(video_path: str, analysis_duration: int, log_func, st
         if len(group) >= 3:
             center = np.mean(group)
             intensity = len(group)
-            best_moments.append((center, intensity))
+            # Длительность группы = разница между первым и последним пиком
+            group_duration = group[-1] - group[0]
+            best_moments.append((center, intensity, group_duration))
     
     # Сортируем по интенсивности
     best_moments.sort(key=lambda x: x[1], reverse=True)
     
-    # Если включена опция "все клипы", возвращаем все моменты
+    # ОБНОВЛЕНИЕ: Обработка режима "все клипы" с учетом ограничений по длительности
+    max_clip_duration = state.clip_duration  # Максимальная длительность клипа
+    min_clip_duration = 3.0  # Минимальная длительность клипа (можно вынести в настройки)
+    min_time_between_clips = max_clip_duration * 1.5  # Минимальное расстояние между клипами
+    
     if state.create_all_clips:
-        selected_moments = [moment[0] for moment in best_moments]
-        log_func(f"🎯 Режим 'Все клипы': найдено {len(selected_moments)} моментов", "INFO")
+        # Для режима "все клипы" берем все моменты, но фильтруем по минимальной длительности и расстоянию
+        filtered_moments = []
+        last_moment = -min_time_between_clips  # Гарантируем, что первый момент будет добавлен
+        
+        for moment, intensity, group_duration in best_moments:
+            # Проверяем минимальную длительность группы пиков
+            if group_duration >= min_clip_duration:
+                # Проверяем минимальное расстояние от предыдущего клипа
+                if moment - last_moment >= min_time_between_clips:
+                    filtered_moments.append(moment)
+                    last_moment = moment
+                    log_func(f"✅ Момент {moment:.1f}с: длительность={group_duration:.1f}с, интенсивность={intensity}", "DEBUG")
+                else:
+                    log_func(f"❌ Момент {moment:.1f}с пропущен: слишком близко к предыдущему клипу", "DEBUG")
+            else:
+                log_func(f"❌ Момент {moment:.1f}с пропущен: слишком короткий (длительность={group_duration:.1f}с)", "DEBUG")
+        
+        selected_moments = filtered_moments
+        log_func(f"🎯 Режим 'Все клипы': найдено {len(selected_moments)} моментов (мин. длительность={min_clip_duration}с, мин. расстояние={min_time_between_clips:.1f}с)", "INFO")
     else:
-        selected_moments = [moment[0] for moment in best_moments[:min(state.clip_count, len(best_moments))]]
-        log_func(f"🎯 Найдено {len(selected_moments)} вирусных моментов", "INFO")
+        # Обычный режим - берем топ-N моментов с проверкой минимальной длительности
+        selected_moments = []
+        for moment, intensity, group_duration in best_moments[:min(state.clip_count * 2, len(best_moments))]:
+            if group_duration >= min_clip_duration and len(selected_moments) < state.clip_count:
+                selected_moments.append(moment)
+                log_func(f"✅ Момент {moment:.1f}с: длительность={group_duration:.1f}с, интенсивность={intensity}", "DEBUG")
+            elif len(selected_moments) >= state.clip_count:
+                break
+            else:
+                log_func(f"❌ Момент {moment:.1f}с пропущен: слишком короткий (длительность={group_duration:.1f}с)", "DEBUG")
+        
+        log_func(f"🎯 Найдено {len(selected_moments)} вирусных моментов (мин. длительность={min_clip_duration}с)", "INFO")
+    
+    # Дополнительная проверка: убеждаемся, что моменты не выходят за пределы видео
+    selected_moments = [max(0, min(moment, duration - max_clip_duration/2)) for moment in selected_moments]
+    
+    # Логируем итоговые временные метки
+    for i, moment in enumerate(selected_moments):
+        # Находим соответствующую информацию о длительности
+        duration_info = next((d for m, _, d in best_moments if abs(m - moment) < 0.1), "N/A")
+        log_func(f"📍 Итоговый момент {i+1}: {moment:.1f}с (длительность группы: {duration_info if duration_info != 'N/A' else 'N/A':.1f}с)", "INFO")
     
     analysis_time = time.time() - start_time
     log_func(f"⏱️ Время анализа: {analysis_time:.1f}с", "INFO")

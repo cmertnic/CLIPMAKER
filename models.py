@@ -7,7 +7,8 @@ class SubtitleSettings:
     def __init__(self, data: Dict[str, Any] = None):
         data = data or CFG["SUBTITLE_SETTINGS"]
         self.font = data.get("font", "Arial-Bold")
-        self.font_size = data.get("font_size", 48)
+        self.font_size = data.get("font_size", 68)
+        self.font_family = data.get("font_family", "Arial")
         self.font_color = data.get("font_color", "#FFFFFF")
         self.bg_color = data.get("bg_color", "#000000")
         self.bg_opacity = data.get("bg_opacity", 0.8)
@@ -44,7 +45,9 @@ class FrameSettings:
         self.frame_color = data.get("frame_color", "#000000")
         self.frame_width = data.get("frame_width", 50)
         self.frame_style = data.get("frame_style", "solid")
-        self.blur_intensity = data.get("blur_intensity", 10)
+        self.blur_intensity = data.get("blur_intensity", 15)  # Исправлено: должно быть нечетным
+        self.target_size = data.get("target_size", (1080, 1920))
+        self.blur_strength = data.get("blur_strength", 15)    # Исправлено: должно быть нечетным
         
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,21 +55,23 @@ class FrameSettings:
             "frame_color": self.frame_color,
             "frame_width": self.frame_width,
             "frame_style": self.frame_style,
-            "blur_intensity": self.blur_intensity
+            "blur_intensity": self.blur_intensity,
+            "target_size": self.target_size,
+            "blur_strength": self.blur_strength
         }
 
 class ProcessingState:
     def __init__(self):
         self.video_path = ""
-        self.clip_count = 5
-        self.clip_duration = 25.0
-        self.min_clip_duration = 8.0
-        self.max_clip_duration = 45.0
-        self.analysis_duration = 600
+        self.clip_count = 1
+        self.clip_duration = 60.0
+        self.min_clip_duration = 30.0
+        self.max_clip_duration = 60.0
+        self.analysis_duration = 1000
         self.use_subtitles = True
         self.crop_to_shorts = True
         self.create_all_clips = False
-        self.add_frame = True
+        self.add_frame = False
         self.is_processing = False
         self.is_paused = False
         self.is_stopped = False
@@ -125,15 +130,15 @@ class ProcessingState:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self.video_path = data.get("video_path", "")
-            self.clip_count = data.get("clip_count", 5)
-            self.clip_duration = data.get("clip_duration", 25.0)
-            self.min_clip_duration = data.get("min_clip_duration", 8.0)
-            self.max_clip_duration = data.get("max_clip_duration", 45.0)
-            self.analysis_duration = data.get("analysis_duration", 600)
+            self.clip_count = data.get("clip_count", 1)
+            self.clip_duration = data.get("clip_duration", 60.0)
+            self.min_clip_duration = data.get("min_clip_duration", 30.0)
+            self.max_clip_duration = data.get("max_clip_duration", 60.0)
+            self.analysis_duration = data.get("analysis_duration", 1000)
             self.use_subtitles = data.get("use_subtitles", True)
             self.crop_to_shorts = data.get("crop_to_shorts", True)
             self.create_all_clips = data.get("create_all_clips", False)
-            self.add_frame = data.get("add_frame", True)
+            self.add_frame = data.get("add_frame", False)
             self.subtitle_settings = SubtitleSettings(data.get("subtitle_settings", {}))
             self.frame_settings = FrameSettings(data.get("frame_settings", {}))
             return True

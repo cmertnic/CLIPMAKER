@@ -1,14 +1,14 @@
 {
   "video_path": "C:/Users/komp/Downloads/2566961518-659048493-2b10a88b-11ed-4878-8591-f902dbba6b97.mp4",
-  "clip_count": 10,
+  "clip_count": 1,
   "clip_duration": 60.0,
   "min_clip_duration": 30.0,
   "max_clip_duration": 60.0,
   "analysis_duration": 1020,
   "use_subtitles": true,
   "crop_to_shorts": true,
-  "create_all_clips": true,
-  "add_frame": true,
+  "create_all_clips": false,
+  "add_frame": false,
   "subtitle_settings": {
     "font": "Arial",
     "font_size": 50,
@@ -36,7 +36,12 @@
     "add_frame": true,
     "frame_color": "#000000",
     "frame_width": 50,
-    "frame_style": "solid",
-    "blur_intensity": 10
+    "frame_style": "blur",
+    "blur_intensity": 10,
+    "target_size": [
+      1080,
+      1920
+    ],
+    "blur_strength": 15
   }
 }
