@@ -99,9 +99,9 @@ CFG = {
     "FRAME_SETTINGS": {
         "add_frame": True,
         "frame_color": "#000000",
-        "frame_width": 50,
+        "frame_width": 70,
         "frame_style": "solid",
-        "blur_intensity": 10
+        "blur_intensity": 20
     },
     "VERBOSE_LOGGING": True
 }

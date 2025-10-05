@@ -3,6 +3,32 @@ import subprocess
 import sys
 from config import setup_imagemagick
 
+def setup_environment():
+    """Настройка окружения при первом запуске"""
+    setup_file = "setup_complete.flag"
+    
+    if not os.path.exists(setup_file):
+        print("🔄 Первый запуск - настраиваем окружение...")
+        
+        # Добавляем локальные бинарники в PATH
+        if getattr(sys, 'frozen', False):
+            # В режиме exe
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            # В режиме разработки
+            base_dir = os.path.dirname(__file__)
+        
+        # Добавляем ffmpeg в PATH
+        ffmpeg_dir = os.path.join(base_dir, "ffmpeg", "bin")
+        if os.path.exists(ffmpeg_dir):
+            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
+        
+        # Создаем файл-флаг завершения настройки
+        with open(setup_file, 'w') as f:
+            f.write("setup_complete")
+        
+        print("✅ Окружение настроено")
+        
 def check_dependencies():
     """Проверка зависимостей"""
     try:

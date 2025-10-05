@@ -8,7 +8,7 @@
   "use_subtitles": true,
   "crop_to_shorts": true,
   "create_all_clips": false,
-  "add_frame": false,
+  "add_frame": true,
   "subtitle_settings": {
     "font": "Arial",
     "font_size": 50,
@@ -16,7 +16,7 @@
     "bg_color": "#000000",
     "bg_opacity": 0.7,
     "stroke_color": "#000000",
-    "stroke_width": 2,
+    "stroke_width": 1,
     "position": "bottom",
     "margin": 50,
     "alignment": "center",
@@ -37,7 +37,7 @@
     "frame_color": "#000000",
     "frame_width": 50,
     "frame_style": "blur",
-    "blur_intensity": 10,
+    "blur_intensity": 20,
     "target_size": [
       1080,
       1920

@@ -7,7 +7,7 @@ class SubtitleSettings:
     def __init__(self, data: Dict[str, Any] = None):
         data = data or CFG["SUBTITLE_SETTINGS"]
         self.font = data.get("font", "Arial-Bold")
-        self.font_size = data.get("font_size", 68)
+        self.font_size = data.get("font_size", 78)
         self.font_family = data.get("font_family", "Arial")
         self.font_color = data.get("font_color", "#FFFFFF")
         self.bg_color = data.get("bg_color", "#000000")

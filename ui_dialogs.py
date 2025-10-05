@@ -1,21 +1,69 @@
 import tkinter as tk
 from tkinter import ttk, colorchooser
 from models import SubtitleSettings, FrameSettings
-
+from PIL import Image, ImageTk
+import os
 class SubtitleSettingsDialog(tk.Toplevel):
     def __init__(self, parent, settings: SubtitleSettings):
         super().__init__(parent)
+        self.state('zoomed')
         self.title("Настройки субтитров")
-        self.geometry("700x750")
+        self.geometry("1920x1080")
         self.resizable(True, True)
         
         self.settings = settings
         self.result = None
+        self.background_image = None
+        self.photo_image = None
         
         self.create_widgets()
         self.load_settings()
+        self.load_background_image()
         self.update_preview()
         
+    def load_background_image(self):
+        """Загрузка фонового изображения для предпросмотра"""
+        try:
+            # Создаем простое изображение с градиентом если нет файла
+            from config import CFG
+            assets_dir = CFG.get("ASSETS_DIR", "assets")
+            image_path = os.path.join(assets_dir, "preview_bg.jpg")
+            
+            if os.path.exists(image_path):
+                # Загружаем существующее изображение
+                self.background_image = Image.open(image_path)
+            else:
+                # Создаем градиентное изображение
+                self.create_gradient_background()
+                
+        except Exception as e:
+            print(f"Не удалось загрузить фоновое изображение: {e}")
+            self.create_gradient_background()
+    
+    def create_gradient_background(self):
+        """Создание градиентного фона для предпросмотра"""
+        try:
+            # Создаем изображение с градиентом от синего к фиолетовому
+            width, height = 800, 450
+            image = Image.new('RGB', (width, height))
+            pixels = image.load()
+            
+            for x in range(width):
+                for y in range(height):
+                    # Градиент от синего (#3498db) к фиолетовому (#9b59b6)
+                    r = int(52 + (155 - 52) * y / height)
+                    g = int(152 + (89 - 152) * y / height)
+                    b = int(219 + (182 - 219) * y / height)
+                    pixels[x, y] = (r, g, b)
+            
+            # Добавляем некоторые детали для реалистичности
+            self.background_image = image
+            
+        except Exception as e:
+            print(f"Не удалось создать градиентный фон: {e}")
+            # Создаем простое синее изображение как запасной вариант
+            self.background_image = Image.new('RGB', (800, 450), (52, 152, 219))
+    
     def create_widgets(self):
         main_frame = ttk.Frame(self, padding="20")
         main_frame.pack(fill="both", expand=True)
@@ -27,13 +75,14 @@ class SubtitleSettingsDialog(tk.Toplevel):
         ttk.Label(text_frame, text="Шрифт:").grid(row=0, column=0, sticky="w", pady=2)
         self.font_var = tk.StringVar()
         font_combo = ttk.Combobox(text_frame, textvariable=self.font_var, 
-                    values=["Arial-Bold", "Arial", "Times-New-Roman-Bold", "Verdana-Bold", "Impact"])
+                    values=["Arial-Bold", "Arial", "Times-New-Roman-Bold", "Verdana-Bold", "Impact", 
+                           "Helvetica-Bold", "Georgia-Bold", "Courier-Bold"])
         font_combo.grid(row=0, column=1, sticky="ew", pady=2, padx=5)
         font_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
         
         ttk.Label(text_frame, text="Размер:").grid(row=1, column=0, sticky="w", pady=2)
         self.font_size_var = tk.IntVar()
-        font_size_spin = ttk.Spinbox(text_frame, from_=24, to=72, textvariable=self.font_size_var, width=15)
+        font_size_spin = ttk.Spinbox(text_frame, from_=24, to=96, textvariable=self.font_size_var, width=15)
         font_size_spin.grid(row=1, column=1, sticky="ew", pady=2, padx=5)
         font_size_spin.bind('<KeyRelease>', lambda e: self.update_preview())
         font_size_spin.bind('<ButtonRelease>', lambda e: self.update_preview())
@@ -46,10 +95,26 @@ class SubtitleSettingsDialog(tk.Toplevel):
         self.color_preview = tk.Label(color_frame, text="     ", bg=self.settings.font_color, relief="solid", bd=1)
         self.color_preview.pack(side="left", padx=5)
         
-        ttk.Label(text_frame, text="Макс. символов:").grid(row=3, column=0, sticky="w", pady=2)
+        # Обводка
+        ttk.Label(text_frame, text="Обводка:").grid(row=3, column=0, sticky="w", pady=2)
+        stroke_frame = ttk.Frame(text_frame)
+        stroke_frame.grid(row=3, column=1, sticky="w", pady=2, padx=5)
+        
+        ttk.Label(stroke_frame, text="Цвет:").pack(side="left")
+        self.stroke_color_btn = ttk.Button(stroke_frame, text="Выбрать", command=self.choose_stroke_color)
+        self.stroke_color_btn.pack(side="left", padx=5)
+        self.stroke_color_preview = tk.Label(stroke_frame, text="     ", bg=self.settings.stroke_color, relief="solid", bd=1)
+        self.stroke_color_preview.pack(side="left", padx=5)
+        
+        ttk.Label(stroke_frame, text="Толщина:").pack(side="left", padx=(10, 0))
+        self.stroke_width_var = tk.IntVar()
+        ttk.Spinbox(stroke_frame, from_=0, to=5, textvariable=self.stroke_width_var, width=5,
+                   command=self.update_preview).pack(side="left", padx=5)
+        
+        ttk.Label(text_frame, text="Макс. символов:").grid(row=4, column=0, sticky="w", pady=2)
         self.max_chars_var = tk.IntVar()
         ttk.Spinbox(text_frame, from_=20, to=50, textvariable=self.max_chars_var, width=15,
-                   command=self.update_preview).grid(row=3, column=1, sticky="ew", pady=2, padx=5)
+                   command=self.update_preview).grid(row=4, column=1, sticky="ew", pady=2, padx=5)
         
         # Позиция
         position_frame = ttk.LabelFrame(main_frame, text="Позиция", padding="10")
@@ -57,13 +122,15 @@ class SubtitleSettingsDialog(tk.Toplevel):
         
         ttk.Label(position_frame, text="Позиция:").grid(row=0, column=0, sticky="w", pady=2)
         self.position_var = tk.StringVar()
-        position_combo = ttk.Combobox(position_frame, textvariable=self.position_var, values=["top", "center", "bottom"])
+        position_combo = ttk.Combobox(position_frame, textvariable=self.position_var, 
+                                    values=["top", "center", "bottom"])
         position_combo.grid(row=0, column=1, sticky="ew", pady=2, padx=5)
         position_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
         
         ttk.Label(position_frame, text="Выравнивание:").grid(row=1, column=0, sticky="w", pady=2)
         self.alignment_var = tk.StringVar()
-        alignment_combo = ttk.Combobox(position_frame, textvariable=self.alignment_var, values=["left", "center", "right"])
+        alignment_combo = ttk.Combobox(position_frame, textvariable=self.alignment_var, 
+                                     values=["left", "center", "right"])
         alignment_combo.grid(row=1, column=1, sticky="ew", pady=2, padx=5)
         alignment_combo.bind('<<ComboboxSelected>>', lambda e: self.update_preview())
         
@@ -73,6 +140,19 @@ class SubtitleSettingsDialog(tk.Toplevel):
         margin_scale.grid(row=2, column=1, sticky="ew", pady=2, padx=5)
         margin_scale.bind('<ButtonRelease>', lambda e: self.update_preview())
         ttk.Label(position_frame, textvariable=self.margin_var, width=4).grid(row=2, column=2, sticky="w", padx=5)
+        
+        # Фон текста
+        ttk.Label(position_frame, text="Фон текста:").grid(row=3, column=0, sticky="w", pady=2)
+        bg_frame = ttk.Frame(position_frame)
+        bg_frame.grid(row=3, column=1, sticky="w", pady=2, padx=5)
+        
+        self.bg_color_var = tk.StringVar(value="none")
+        ttk.Radiobutton(bg_frame, text="Без фона", variable=self.bg_color_var, value="none",
+                       command=self.update_preview).pack(side="left")
+        ttk.Radiobutton(bg_frame, text="Черный", variable=self.bg_color_var, value="black",
+                       command=self.update_preview).pack(side="left", padx=10)
+        ttk.Radiobutton(bg_frame, text="Полупрозрачный", variable=self.bg_color_var, value="transparent",
+                       command=self.update_preview).pack(side="left", padx=10)
         
         # Whisper
         whisper_frame = ttk.LabelFrame(main_frame, text="Whisper", padding="10")
@@ -107,7 +187,7 @@ class SubtitleSettingsDialog(tk.Toplevel):
         preview_frame = ttk.LabelFrame(main_frame, text="Предпросмотр субтитров", padding="10")
         preview_frame.pack(fill="both", expand=True, pady=10)
         
-        self.preview_canvas = tk.Canvas(preview_frame, bg="#2c3e50")
+        self.preview_canvas = tk.Canvas(preview_frame, bg="#1a1a1a")
         self.preview_canvas.pack(fill="both", expand=True, pady=10)
         
         # Кнопки
@@ -131,6 +211,13 @@ class SubtitleSettingsDialog(tk.Toplevel):
             self.color_preview.config(bg=color[1])
             self.update_preview()
     
+    def choose_stroke_color(self):
+        color = colorchooser.askcolor(title="Выберите цвет обводки", initialcolor=self.settings.stroke_color)
+        if color[1]:
+            self.settings.stroke_color = color[1]
+            self.stroke_color_preview.config(bg=color[1])
+            self.update_preview()
+    
     def load_settings(self):
         self.font_var.set(self.settings.font)
         self.font_size_var.set(self.settings.font_size)
@@ -143,7 +230,9 @@ class SubtitleSettingsDialog(tk.Toplevel):
         self.fixed_size_var.set(self.settings.fixed_size)
         self.animation_var.set(self.settings.animation)
         self.confidence_var.set(self.settings.confidence_threshold)
+        self.stroke_width_var.set(self.settings.stroke_width)
         self.color_preview.config(bg=self.settings.font_color)
+        self.stroke_color_preview.config(bg=self.settings.stroke_color)
     
     def save_settings(self):
         self.settings.font = self.font_var.get()
@@ -157,71 +246,135 @@ class SubtitleSettingsDialog(tk.Toplevel):
         self.settings.fixed_size = self.fixed_size_var.get()
         self.settings.animation = self.animation_var.get()
         self.settings.confidence_threshold = self.confidence_var.get()
+        self.settings.stroke_width = self.stroke_width_var.get()
     
     def update_preview(self, event=None):
-        """Обновление предпросмотра субтитров с адаптацией под размер"""
+        """Обновление предпросмотра субтитров с фоновым изображением"""
         self.preview_canvas.delete("all")
         
         # Получаем актуальные размеры canvas
         canvas_w = self.preview_canvas.winfo_width() or 600
-        canvas_h = self.preview_canvas.winfo_height() or 120
+        canvas_h = self.preview_canvas.winfo_height() or 300
         
-        if canvas_w < 100 or canvas_h < 60:
-            canvas_w, canvas_h = 600, 120
+        if canvas_w < 100 or canvas_h < 100:
+            canvas_w, canvas_h = 600, 300
         
-        # Рисуем фон видео
-        self.preview_canvas.create_rectangle(0, 0, canvas_w, canvas_h, fill="#34495e", outline="")
+        # Рисуем фоновое изображение
+        if self.background_image:
+            try:
+                # Масштабируем изображение под размер canvas
+                bg_resized = self.background_image.copy()
+                bg_resized = bg_resized.resize((canvas_w, canvas_h), Image.Resampling.LANCZOS)
+                self.photo_image = ImageTk.PhotoImage(bg_resized)
+                self.preview_canvas.create_image(0, 0, image=self.photo_image, anchor="nw")
+            except Exception as e:
+                # Запасной вариант - градиентный фон
+                self.preview_canvas.create_rectangle(0, 0, canvas_w, canvas_h, fill="#34495e", outline="")
+        else:
+            # Градиентный фон как запасной вариант
+            self.preview_canvas.create_rectangle(0, 0, canvas_w, canvas_h, fill="#34495e", outline="")
         
         # Текст для предпросмотра
-        sample_text = "Это пример текста субтитров который будет отображаться в видео"
-        if len(sample_text) > self.max_chars_var.get():
-            sample_text = sample_text[:self.max_chars_var.get()] + "..."
+        sample_texts = [
+            "Это пример текста субтитров",
+            "который будет отображаться в видео"
+        ]
         
-        # Позиционирование текста
+        # Обрезаем текст если нужно
+        max_chars = self.max_chars_var.get()
+        sample_texts = [text[:max_chars] + "..." if len(text) > max_chars else text 
+                       for text in sample_texts]
+        
+        # Параметры текста
         font_size = self.font_size_var.get()
         margin = self.margin_var.get()
+        font_family = self.font_var.get()
+        text_color = self.settings.font_color
+        stroke_color = self.settings.stroke_color
+        stroke_width = self.stroke_width_var.get()
         
+        # Вычисляем общую высоту текста
+        line_height = font_size * 1.2
+        total_text_height = len(sample_texts) * line_height
+        
+        # Позиционирование текста
         if self.position_var.get() == 'top':
-            y_pos = margin
+            y_start = margin
         elif self.position_var.get() == 'bottom':
-            y_pos = canvas_h - margin - font_size * 2
-        else:
-            y_pos = (canvas_h - font_size * 2) / 2
+            y_start = canvas_h - margin - total_text_height
+        else:  # center
+            y_start = (canvas_h - total_text_height) / 2
         
+        # Выравнивание
         if self.alignment_var.get() == 'left':
             x_pos = margin
+            anchor = "nw"
         elif self.alignment_var.get() == 'right':
-            x_pos = canvas_w - margin - len(sample_text) * font_size / 2
-        else:
+            x_pos = canvas_w - margin
+            anchor = "ne"
+        else:  # center
             x_pos = canvas_w / 2
+            anchor = "n"
         
-        # Рисуем фон для текста
-        text_width = len(sample_text) * font_size / 2
-        text_height = font_size * 2
+        # Рисуем фон для текста если выбран
+        if self.bg_color_var.get() != "none":
+            # Вычисляем размеры фона
+            max_line_width = max(len(text) for text in sample_texts) * font_size * 0.6
+            bg_width = min(max_line_width + 40, canvas_w - margin * 2)
+            bg_height = total_text_height + 20
+            
+            # Вычисляем позицию фона
+            if anchor == "nw":
+                bg_x = x_pos - 10
+            elif anchor == "ne":
+                bg_x = x_pos - bg_width + 10
+            else:  # center
+                bg_x = x_pos - bg_width / 2
+            
+            bg_y = y_start - 10
+            
+            # Рисуем фон
+            if self.bg_color_var.get() == "black":
+                self.preview_canvas.create_rectangle(
+                    bg_x, bg_y, bg_x + bg_width, bg_y + bg_height,
+                    fill="#000000", outline="", stipple=""
+                )
+            else:  # transparent
+                self.preview_canvas.create_rectangle(
+                    bg_x, bg_y, bg_x + bg_width, bg_y + bg_height,
+                    fill="#000000", outline="", stipple="gray50"
+                )
         
-        # Ограничиваем размеры фона чтобы не выходил за границы
-        text_width = min(text_width, canvas_w - 20)
-        x_pos = max(margin, min(x_pos, canvas_w - text_width - margin))
-        
-        self.preview_canvas.create_rectangle(
-            x_pos - 10, y_pos - 5,
-            x_pos + text_width + 10, y_pos + text_height + 5,
-            fill="#000000", outline="", stipple="gray50"
-        )
-        
-        # Рисуем текст
-        self.preview_canvas.create_text(
-            x_pos, y_pos + font_size,
-            text=sample_text,
-            fill=self.settings.font_color,
-            font=(self.font_var.get(), font_size),
-            anchor="nw"
-        )
+        # Рисуем текст с обводкой
+        for i, text in enumerate(sample_texts):
+            y_pos = y_start + i * line_height
+            
+            # Рисуем обводку (тень)
+            if stroke_width > 0:
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            self.preview_canvas.create_text(
+                                x_pos + dx, y_pos + dy,
+                                text=text,
+                                fill=stroke_color,
+                                font=(font_family, font_size, "bold"),
+                                anchor=anchor
+                            )
+            
+            # Рисуем основной текст
+            self.preview_canvas.create_text(
+                x_pos, y_pos,
+                text=text,
+                fill=text_color,
+                font=(font_family, font_size, "bold"),
+                anchor=anchor
+            )
         
         # Подпись
         self.preview_canvas.create_text(
             canvas_w/2, canvas_h - 10,
-            text="Предпросмотр субтитров",
+            text="Реалистичный предпросмотр субтитров на фоне видео",
             fill="#95a5a6",
             font=("Arial", 10),
             anchor="s"

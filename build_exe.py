@@ -2,10 +2,179 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
+import zipfile
+import tempfile
+import shutil
 from pathlib import Path
 
+def download_with_progress(url, filename):
+    """Скачивание файла с индикатором прогресса"""
+    def progress_hook(block_num, block_size, total_size):
+        downloaded = block_num * block_size
+        percent = min(100, int(downloaded * 100 / total_size))
+        bar_length = 30
+        filled_length = int(bar_length * percent // 100)
+        bar = '█' * filled_length + '░' * (bar_length - filled_length)
+        sys.stdout.write(f'\r📥 {filename}: [{bar}] {percent}%')
+        sys.stdout.flush()
+    
+    try:
+        urllib.request.urlretrieve(url, filename, progress_hook)
+        sys.stdout.write('\n')
+        return True
+    except Exception as e:
+        print(f"\n❌ Ошибка скачивания {filename}: {e}")
+        return False
+
+def install_ffmpeg():
+    """Установка FFmpeg в папку dist"""
+    ffmpeg_dir = Path('dist/ffmpeg')
+    ffmpeg_exe = ffmpeg_dir / 'bin' / 'ffmpeg.exe'
+    
+    if ffmpeg_exe.exists():
+        print("✅ FFmpeg уже установлен")
+        return True
+    
+    print("🔧 Устанавливаем FFmpeg...")
+    
+    # URL для FFmpeg (официальная сборка для Windows)
+    ffmpeg_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+            print(f"📥 Скачиваем FFmpeg...")
+            if not download_with_progress(ffmpeg_url, tmp_file.name):
+                return False
+            
+            # Создаем временную папку для распаковки
+            temp_extract = Path('ffmpeg_temp')
+            if temp_extract.exists():
+                shutil.rmtree(temp_extract)
+            
+            print("📦 Распаковываем FFmpeg...")
+            with zipfile.ZipFile(tmp_file.name, 'r') as zip_ref:
+                zip_ref.extractall(temp_extract)
+            
+            # Находим папку с бинарниками
+            bin_dir = None
+            for item in temp_extract.rglob('ffmpeg.exe'):
+                bin_dir = item.parent
+                break
+            
+            if bin_dir and bin_dir.exists():
+                # Копируем в целевую папку
+                ffmpeg_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(bin_dir, ffmpeg_dir / 'bin')
+                print("✅ FFmpeg успешно установлен")
+            else:
+                print("❌ Не найдены исполняемые файлы FFmpeg")
+                return False
+            
+            # Очистка
+            shutil.rmtree(temp_extract)
+            os.unlink(tmp_file.name)
+            
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка установки FFmpeg: {e}")
+        return False
+
+def install_whisper_model():
+    """Скачивание модели Whisper"""
+    models_dir = Path('dist/models')
+    models_dir.mkdir(exist_ok=True)
+    
+    # Базовая модель Whisper
+    model_name = "base"
+    model_url = f"https://openaipublic.azureedge.net/main/whisper/models/81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524/{model_name}.pt"
+    model_path = models_dir / f"{model_name}.pt"
+    
+    if model_path.exists():
+        print(f"✅ Модель Whisper {model_name} уже загружена")
+        return True
+    
+    print(f"🔧 Загружаем модель Whisper ({model_name})...")
+    try:
+        if download_with_progress(model_url, model_path):
+            print(f"✅ Модель Whisper {model_name} загружена")
+            return True
+        else:
+            print(f"❌ Не удалось загрузить модель Whisper")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка загрузки модели: {e}")
+        return False
+
+def check_python_dependencies():
+    """Проверка и установка Python зависимостей"""
+    print("🔍 Проверка Python зависимостей...")
+    
+    dependencies = [
+        'torch',
+        'torchvision', 
+        'torchaudio',
+        'openai-whisper',
+        'moviepy',
+        'opencv-python',
+        'pydub',
+        'numpy',
+        'Pillow',
+        'tqdm'
+    ]
+    
+    for dep in dependencies:
+        try:
+            __import__(dep.replace('-', '_'))
+            print(f"  ✅ {dep}")
+        except ImportError:
+            print(f"  📥 Устанавливаем {dep}...")
+            try:
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', dep])
+                print(f"  ✅ {dep} установлен")
+            except subprocess.CalledProcessError:
+                print(f"  ❌ Не удалось установить {dep}")
+
+def create_assets_folder():
+    """Создает полную структуру папки assets"""
+    assets_dir = Path('assets')
+    assets_dir.mkdir(exist_ok=True)
+    
+    # Создаем подпапки
+    subfolders = ['fonts', 'images', 'frames', 'icons']
+    for folder in subfolders:
+        (assets_dir / folder).mkdir(exist_ok=True)
+    
+    # Создаем базовую иконку если её нет
+    icon_path = assets_dir / 'icons' / 'icon.ico'
+    if not icon_path.exists():
+        # Создаем простую инструкцию для иконки
+        icon_help = assets_dir / 'icons' / 'README.txt'
+        icon_help.write_text("""Добавьте сюда файлы иконок:
+- icon.ico - основная иконка приложения (32x32, 48x48, 256x256)
+- icon.png - иконка для разных размеров
+
+Рекомендуемые инструменты:
+• https://convertio.co/ru/png-ico/ - онлайн конвертер
+• IcoFX - программа для создания иконок
+• GIMP + плагин для ICO
+""")
+        print("⚠️ Иконка не найдена, создана инструкция")
+    
+    # Создаем README для шрифтов
+    fonts_readme = assets_dir / 'fonts' / 'README.txt'
+    fonts_readme.write_text("""Добавьте сюда шрифты для субтитров:
+- .ttf или .otf файлы
+- Рекомендуемые шрифты: Arial, Times New Roman, Roboto
+- Шрифты с поддержкой эмодзи: Segoe UI Emoji, Noto Color Emoji
+""")
+    
+    print("✅ Создана структура папки assets")
+
 def build_exe():
-    print("🚀 Сборка AI Video Clipper...")
+    print("🚀 Запуск улучшенной сборки AI Video Clipper...")
+    print("=" * 50)
     
     # Проверяем существование необходимых файлов
     required_files = [
@@ -25,30 +194,30 @@ def build_exe():
     
     if missing_files:
         print(f"❌ Отсутствуют файлы: {missing_files}")
+        print("💡 Убедитесь, что все файлы находятся в одной папке")
         return False
     
-    # Проверяем папку assets
-    assets_dir = Path('assets')
-    if not assets_dir.exists():
-        print("⚠️ Папка assets не найдена, создаем...")
-        assets_dir.mkdir(exist_ok=True)
-        # Создаем простую иконку если нет
-        icon_path = assets_dir / 'icon.ico'
-        if not icon_path.exists():
-            print("⚠️ Иконка не найдена, сборка продолжится без нее")
+    # Создаем папку assets если её нет
+    if not Path('assets').exists():
+        create_assets_folder()
     
     # Очистка предыдущих сборок
+    print("🧹 Очистка предыдущих сборок...")
     for folder in ['dist', 'build', '__pycache__']:
         if os.path.exists(folder):
             try:
-                import shutil
-                shutil.rmtree(folder)
-                print(f"✅ Очищена папка {folder}")
+                # Даем время на освобождение файлов
                 time.sleep(1)
+                shutil.rmtree(folder)
+                print(f"  ✅ Очищена папка {folder}")
             except Exception as e:
-                print(f"⚠️ Не удалось очистить {folder}: {e}")
+                print(f"  ⚠️ Не удалось очистить {folder}: {e}")
     
-    # Создаем команду для PyInstaller
+    # Проверяем и устанавливаем зависимости
+    print("\n📦 Подготовка зависимостей...")
+    check_python_dependencies()
+    
+    # Создаем команду для PyInstaller с улучшенными настройками
     cmd = [
         sys.executable, '-m', 'PyInstaller',
         'main.py',
@@ -62,68 +231,83 @@ def build_exe():
         '--add-data=models.py;.',
         '--add-data=frame_processor.py;.',
         '--add-data=subtitle_engine.py;.',
-        '--add-data=video_processor.py;.', 
+        '--add-data=video_processor.py;.',
+        # Whisper зависимости
         '--hidden-import=whisper',
         '--hidden-import=whisper.audio',
         '--hidden-import=whisper.model',
         '--hidden-import=whisper.transcribe',
         '--hidden-import=whisper.decoding',
         '--hidden-import=whisper.timing',
-        '--hidden-import=config',
-        '--hidden-import=utils',
-        '--hidden-import=models', 
-        '--hidden-import=frame_processor',
-        '--hidden-import=subtitle_engine',
-        '--hidden-import=video_processor',
+        '--hidden-import=whisper.normalizers',
+        '--hidden-import=whisper.tokenizer',
+        # MoviePy зависимости
+        '--hidden-import=moviepy',
         '--hidden-import=moviepy.video.io.VideoFileClip',
         '--hidden-import=moviepy.video.VideoClip',
         '--hidden-import=moviepy.video.fx.all',
+        '--hidden-import=moviepy.audio.io.AudioFileClip',
+        '--hidden-import=moviepy.audio.AudioClip',
+        '--hidden-import=moviepy.audio.fx.all',
+        # Другие зависимости
+        '--hidden-import=pydub',
         '--hidden-import=pydub.utils',
         '--hidden-import=pydub.silence',
+        '--hidden-import=pydub.effects',
         '--hidden-import=cv2',
         '--hidden-import=cv2.data',
         '--hidden-import=numpy',
         '--hidden-import=PIL',
+        '--hidden-import=PIL.Image',
+        '--hidden-import=PIL.ImageDraw',
+        '--hidden-import=PIL.ImageFont',
+        '--hidden-import=PIL.ImageOps',
         '--hidden-import=tkinter',
-        '--collect-all=moviepy', 
+        '--hidden-import=tkinter.filedialog',
+        '--hidden-import=tkinter.messagebox',
+        '--hidden-import=torch',
+        '--hidden-import=torchvision',
+        # Сбор данных
+        '--collect-all=moviepy',
+        '--collect-all=pydub', 
+        '--collect-all=whisper',
         '--collect-data=whisper',
+        '--collect-data=torch',
+        '--collect-data=torchvision',
         '--clean',
         '--noconfirm'
     ]
     
     # Добавляем иконку если она существует
-    icon_path = 'assets/icon.ico'
+    icon_path = 'assets/icons/icon.ico'
     if os.path.exists(icon_path):
         cmd.append(f'--icon={icon_path}')
         print("✅ Используется иконка из assets")
     else:
         print("⚠️ Сборка без иконки")
     
-    # Добавляем папку assets если она существует и не пуста
-    if assets_dir.exists() and any(assets_dir.iterdir()):
-        cmd.append('--add-data=assets;assets')
-        print("✅ Добавлена папка assets")
-    
-    print("🔨 Запускаем PyInstaller...")
-    print(f"Команда: {' '.join(cmd)}")
+    print(f"\n🔨 Запускаем PyInstaller...")
+    print(f"Команда: {' '.join(cmd[:5])} ... [скрыто для читаемости]")
     
     try:
+        # Запускаем сборку
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print("✅ Сборка завершена успешно!")
+        print("✅ Сборка PyInstaller завершена успешно!")
+        
+        # Устанавливаем дополнительные зависимости
+        print("\n🔧 Установка дополнительных компонентов...")
+        install_ffmpeg()
+        install_whisper_model()
         
         # Проверяем результат
         exe_path = Path('dist') / 'AI_Video_Clipper.exe'
         if exe_path.exists():
             size_mb = exe_path.stat().st_size / (1024 * 1024)
-            print(f"🎉 Файл создан: {exe_path}")
+            print(f"\n🎉 Файл создан: {exe_path}")
             print(f"📁 Размер: {size_mb:.1f} MB")
             
             # Создаем инструкцию
             create_instruction_file()
-            
-            # Проверяем зависимости
-            print("🔍 Проверяем основные зависимости...")
-            check_dependencies()
             
             return True
         else:
@@ -131,106 +315,104 @@ def build_exe():
             return False
             
     except subprocess.CalledProcessError as e:
-        print(f"❌ Ошибка сборки (код {e.returncode}):")
+        print(f"\n❌ Ошибка сборки (код {e.returncode}):")
         if e.stdout:
-            print(f"STDOUT: {e.stdout[-500:]}")  # Последние 500 символов
+            # Выводим последние строки лога
+            lines = e.stdout.split('\n')
+            print("Последние строки лога:")
+            for line in lines[-10:]:
+                if line.strip():
+                    print(f"  {line}")
         if e.stderr:
             print(f"STDERR: {e.stderr[-500:]}")
         return False
     except Exception as e:
         print(f"❌ Неожиданная ошибка: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
-def check_dependencies():
-    """Проверка основных зависимостей"""
-    deps = [
-        'cv2', 'numpy', 'moviepy', 'pydub', 'PIL', 'tkinter'
-    ]
-    
-    print("📦 Проверка зависимостей в системе:")
-    for dep in deps:
-        try:
-            __import__(dep)
-            print(f"  ✅ {dep}")
-        except ImportError as e:
-            print(f"  ❌ {dep}: {e}")
-
-def create_assets_folder():
-    """Создает базовую структуру папки assets"""
-    assets_dir = Path('assets')
-    assets_dir.mkdir(exist_ok=True)
-    
-    # Создаем README для assets
-    readme = assets_dir / 'README.txt'
-    readme.write_text("""Папка для ресурсов приложения
-
-Разместите здесь:
-- icon.ico - иконка приложения
-- fonts/ - шрифты для субтитров  
-- images/ - изображения для интерфейса
-- frames/ - рамки для видео
-
-Для иконки можно использовать онлайн-конвертер:
-https://convertio.co/ru/png-ico/
-""")
-    print("✅ Создана папка assets с инструкцией")
-
 def create_instruction_file():
-    """Создает файл инструкции после успешной сборки"""
-    instruction_content = """🎯 AI Video Clipper - Инструкция по использованию
+    """Создает подробную инструкцию"""
+    instruction_content = """🎯 AI Video Clipper - Полная инструкция
 
-📁 РАСПОЛОЖЕНИЕ ФАЙЛОВ:
-• AI_Video_Clipper.exe - главный исполняемый файл
-• assets/ - папка с ресурсами (иконки, шрифты, рамки)
+📁 СОДЕРЖИМОЕ ПАПКИ:
+• AI_Video_Clipper.exe - главное приложение
+• ffmpeg/ - движок обработки видео (автоустановка)
+• models/ - модели AI для распознавания речи
+• ИНСТРУКЦИЯ.txt - этот файл
 
-🚀 ЗАПУСК ПРИЛОЖЕНИЯ:
-1. Дважды щелкните на AI_Video_Clipper.exe
-2. Или запустите из командной строки: AI_Video_Clipper.exe
+🚀 БЫСТРЫЙ СТАРТ:
 
-🎬 КАК ИСПОЛЬЗОВАТЬ:
+1. ЗАПУСК ПРИЛОЖЕНИЯ
+   Дважды щелкните на AI_Video_Clipper.exe
 
-1. ВЫБОР ВИДЕО
-   • Нажмите "Выбрать видео" и выберите файл
-   • Поддерживаются: MP4, AVI, MOV, MKV
+2. ВЫБОР ВИДЕО
+   • Нажмите "Выбрать видео"
+   • Выберите файл (MP4, AVI, MOV, MKV)
+   • Подождите загрузки
 
-2. НАСТРОЙКИ ОБРАБОТКИ
-   • Количество клипов: сколько моментов найти (1-10)
-   • Длительность клипа: продолжительность каждого клипа
-   • Анализ первых: анализировать только начало видео
-   • Создать все клипы: найти все возможные моменты
-
-3. ФОРМАТ ВЫВОДА
-   • Shorts/TikTok: вертикальное видео 9:16
-   • Добавить рамку: стильные рамки вокруг видео
-   • Субтитры: автоматическое распознавание речи
+3. НАСТРОЙКИ
+   • Количество клипов: 1-10
+   • Длительность: 15-60 секунд
+   • Анализ: всей записи или только начала
+   • Формат: Shorts (9:16) или оригинал
 
 4. ОБРАБОТКА
    • Нажмите "Начать обработку"
-   • Дождитесь завершения анализа и создания клипов
-   • Готовые клипы появятся в папке "output"
+   • Ждите завершения (зависит от размера видео)
+   • Результаты в папке "output"
 
-⚠️ ВАЖНЫЕ ЗАМЕЧАНИЯ:
+🔧 АВТОМАТИЧЕСКИ УСТАНАВЛИВАЕТСЯ:
 
-• Для работы нужны ffmpeg.exe и ffprobe.exe в той же папке
-• Видео должно иметь звуковую дорожку для анализа аудио
-• Большие видеофайлы обрабатываются дольше
-• Рекомендуется использовать видео до 1 часа
+✓ FFmpeg - обработка видео и аудио
+✓ Whisper AI - распознавание речи  
+✓ Все Python библиотеки
+✓ Модели машинного обучения
 
-🔧 ЕСЛИ ВОЗНИКЛИ ПРОБЛЕМЫ:
+⚠️ РЕШЕНИЕ ПРОБЛЕМ:
 
-1. Проверьте, что ffmpeg.exe есть в папке
-2. Убедитесь, что видеофайл не поврежден
-3. Попробуйте перезапустить приложение
-4. Для больших видео увеличьте время анализа
+1. Приложение не запускается
+   • Проверьте антивирус (может блокировать)
+   • Запустите от администратора
+   • Убедитесь в наличии .NET Framework 4.5+
 
-📞 ПОДДЕРЖКА:
-Если проблемы сохраняются, проверьте:
-1. Наличие всех DLL файлов
-2. Достаточно ли места на диске
-3. Не блокирует ли антивирус приложение
+2. Ошибки с видео
+   • Проверьте, что файл не поврежден
+   • Попробуйте другой формат (MP4 лучше всего)
+   • Убедитесь, что есть звуковая дорожка
 
-🎉 Успешного использования!"""
-    
+3. Долгая обработка
+   • Большие файлы обрабатываются дольше
+   • Закройте другие программы
+   • Для ускорения анализируйте только начало
+
+🎬 ПОДДЕРЖИВАЕМЫЕ ВОЗМОЖНОСТИ:
+
+• Автоматическое определение интересных моментов
+• Распознавание речи и субтитры
+• Вертикальный формат для Shorts/TikTok
+• Стильные рамки для видео
+• Обрезка и нарезка клипов
+• Сохранение в MP4 с хорошим качеством
+
+📞 ТЕХНИЧЕСКАЯ ПОДДЕРЖКА:
+
+Если проблемы остаются:
+1. Перезапустите приложение
+2. Проверьте место на диске (нужно 2+ GB свободно)
+3. Попробуйте другое видео для теста
+4. Убедитесь, что все файлы в одной папке
+
+💡 СОВЕТЫ:
+
+• Для лучшего качества используйте MP4 с H.264
+• Оптимальная длительность исходного видео: 5-30 минут
+• Для точного определения моментов важен четкий звук
+• Рамки добавляют профессиональный вид клипам
+
+🎉 Удачи в создании крутых видео!"""
+
     instruction_path = Path('dist') / 'ИНСТРУКЦИЯ.txt'
     try:
         instruction_path.write_text(instruction_content, encoding='utf-8')
@@ -239,9 +421,8 @@ def create_instruction_file():
         print(f"⚠️ Не удалось создать инструкцию: {e}")
 
 if __name__ == "__main__":
-    # Создаем папку assets если её нет
-    if not Path('assets').exists():
-        create_assets_folder()
+    print("🛠️  Улучшенный сборщик AI Video Clipper")
+    print("Этот скрипт автоматически установит все зависимости!\n")
     
     # Даем время на освобождение файлов
     time.sleep(2)
@@ -249,17 +430,27 @@ if __name__ == "__main__":
     success = build_exe()
     
     if success:
-        print("\n🎊 Сборка завершена успешно!")
-        print("💡 Советы:")
-        print("  - Если есть проблемы с запуском, попробуйте:")
-        print("    python main.py (для проверки исходного кода)")
-        print("  - EXE файл в папке: dist/AI_Video_Clipper.exe")
-        print("  - Инструкция создана: dist/ИНСТРУКЦИЯ.txt")
+        print("\n" + "="*50)
+        print("🎊 СБОРКА ЗАВЕРШЕНА УСПЕШНО!")
+        print("="*50)
+        print("\n📋 Что было сделано:")
+        print("  ✅ Собран EXE файл с PyInstaller")
+        print("  ✅ Установлен FFmpeg для обработки видео")
+        print("  ✅ Загружены модели AI для распознавания речи")
+        print("  ✅ Установлены все Python зависимости")
+        print("  ✅ Создана подробная инструкция")
+        
+        print("\n🚀 Теперь вы можете:")
+        print("  1. Запустить dist/AI_Video_Clipper.exe")
+        print("  2. Следовать инструкции в ИНСТРУКЦИЯ.txt")
+        print("  3. Создавать крутые видео клипы!")
+        
     else:
         print("\n💡 Советы по устранению ошибок:")
-        print("  - Убедитесь что все файлы .py в той же папке")
-        print("  - Закройте все программы, использующие папку dist")
-        print("  - Попробуйте запустить командную строку от администратора")
-        print("  - Проверьте что Python и PyInstaller установлены корректно")
+        print("  • Запустите командную строку от администратора")
+        print("  • Убедитесь, что интернет подключен для загрузки зависимостей")
+        print("  • Проверьте, что Python 3.8+ установлен корректно")
+        print("  • Попробуйте: pip install --upgrade pyinstaller")
+        print("  • Закройте все программы, использующие папку dist")
     
     input("\nНажмите Enter для выхода...")

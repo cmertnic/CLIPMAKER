@@ -43,19 +43,64 @@ def get_safe_font_path(font_name):
     
     return "Arial"
 
+def improve_text_grammar(text):
+    """Улучшает грамматику текста"""
+    if not text:
+        return ""
+    
+    # Убираем лишние пробелы
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Исправляем распространенные ошибки
+    corrections = {
+        r'\bсщ\b': 'сч',
+        r'\bзщ\b': 'зч', 
+        r'\bжщ\b': 'жч',
+        r'\b([кст])([кст])\b': r'\1\2',  # двойные согласные
+        r'\b([а-я])\1+\b': r'\1',  # убираем повторяющиеся буквы
+    }
+    
+    for pattern, replacement in corrections.items():
+        text = re.sub(pattern, replacement, text)
+    
+    # Добавляем заглавные буквы в начале предложений
+    sentences = re.split(r'([.!?]+\s*)', text)
+    result = []
+    capitalize_next = True
+    
+    for part in sentences:
+        if capitalize_next and part.strip():
+            part = part[0].upper() + part[1:] if part else part
+            capitalize_next = False
+        if part.strip().endswith(('.', '!', '?')):
+            capitalize_next = True
+        result.append(part)
+    
+    text = ''.join(result)
+    
+    return text
+
 def clean_subtitle_text(text):
-    """Простая очистка текста субтитров"""
+    """Улучшенная очистка текста субтитров с грамматической коррекцией"""
     if not text:
         return ""
     
     # Удаляем лишние пробелы
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # Удаляем точки в конце фраз
+    # Удаляем лишние знаки препинания в конце
     text = re.sub(r'[\.\!\?]+$', '', text)
     
     # Удаляем очевидный мусор
     if re.match(r'^[\.\s!?,]+$', text):
+        return ""
+    
+    # Улучшаем грамматику
+    text = improve_text_grammar(text)
+    
+    # Убираем короткие бессмысленные фразы
+    meaningless_phrases = ['а', 'но', 'и', 'да', 'нет', 'ну', 'вот', 'это', 'то']
+    if text.lower() in meaningless_phrases:
         return ""
     
     return text
@@ -68,6 +113,10 @@ def is_garbage_text(text):
     # Текст состоит в основном из пунктуации
     clean_text = re.sub(r'[\.\s!?,]', '', text)
     if len(clean_text) < 2:
+        return True
+    
+    # Проверяем на набор случайных символов
+    if re.match(r'^[а-я]*[a-z]+[а-я]*$', text.lower()):
         return True
     
     return False
@@ -139,8 +188,32 @@ def safe_video_loading(clip_path: str):
             time.sleep(0.5)
             continue
 
-def create_phrase_subtitles(segments, video_width: int, video_height: int, settings: SubtitleSettings) -> List[TextClip]:
-    """Создает субтитры фразами - по одной фразе за раз"""
+def detect_speech_activity(audio_path, threshold=0.01):
+    """Обнаружение речевой активности для точной синхронизации"""
+    try:
+        from pydub import AudioSegment
+        from pydub.silence import detect_nonsilent
+        
+        # Загружаем аудио
+        audio = AudioSegment.from_file(audio_path)
+        
+        # Обнаруживаем не-тихие сегменты (речь)
+        nonsilent_segments = detect_nonsilent(
+            audio, 
+            min_silence_len=100,  # 100ms тишины
+            silence_thresh=threshold * audio.dBFS  # Порог тишины
+        )
+        
+        # Конвертируем в секунды
+        speech_segments = [(start/1000, end/1000) for start, end in nonsilent_segments]
+        return speech_segments
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка детектирования речи: {e}")
+        return []
+
+def create_phrase_subtitles(segments, video_width: int, video_height: int, settings: SubtitleSettings, speech_segments=None) -> List[TextClip]:
+    """Создает субтитры фразами с синхронизацией по голосу"""
     subtitle_clips = []
     
     for i, segment in enumerate(segments):
@@ -150,13 +223,22 @@ def create_phrase_subtitles(segments, video_width: int, video_height: int, setti
         
         # Пропускаем слишком короткие или мусорные сегменты
         duration = end - start
-        if duration < 0.5 or is_garbage_text(text):
+        if duration < 0.3 or is_garbage_text(text):
             continue
         
-        # Очищаем текст
+        # Очищаем и улучшаем текст
         cleaned_text = clean_subtitle_text(text)
         if not cleaned_text:
             continue
+        
+        # Проверяем, есть ли речь в этом сегменте (если доступны данные о речи)
+        if speech_segments:
+            has_speech = any(
+                speech_start <= end and speech_end >= start 
+                for speech_start, speech_end in speech_segments
+            )
+            if not has_speech:
+                continue  # Пропускаем субтитры без речи
         
         try:
             # Создаем субтитр для одной фразы
@@ -182,14 +264,14 @@ def create_single_subtitle_clip(text: str, duration: float, video_width: int, vi
         # Получаем безопасный путь к шрифту
         safe_font = get_safe_font_path(settings.font)
         
-        # Создаем текстовый клип с белым текстом без обводки
+        # Создаем текстовый клип с белым текстом и тонкой черной обводкой для читаемости
         txt_clip = TextClip(
             formatted_text,
             fontsize=settings.font_size,
-            color='white',  # Чисто белый текст
+            color='white',
             font=safe_font,
-            stroke_color=None,  # Без обводки
-            stroke_width=0,     # Без обводки
+            stroke_color='black',  # Тонкая обводка для контраста
+            stroke_width=1.5,      # Улучшает читаемость
             method='caption',
             size=(video_width * 0.9, None)
         )
@@ -197,7 +279,7 @@ def create_single_subtitle_clip(text: str, duration: float, video_width: int, vi
         # Устанавливаем точную длительность
         txt_clip = txt_clip.set_duration(duration)
         
-        # Позиционирование внизу
+        # Позиционирование внизу с небольшим отступом
         pos_y = video_height - txt_clip.h - settings.margin
         pos_x = (video_width - txt_clip.w) / 2
         
@@ -208,8 +290,8 @@ def create_single_subtitle_clip(text: str, duration: float, video_width: int, vi
     except Exception as e:
         raise Exception(f"Ошибка создания субтитра: {e}")
 
-def extract_phrases_from_segments(segments):
-    """Извлекает фразы из сегментов, объединяя короткие и продлевая время"""
+def extract_phrases_from_segments(segments, min_duration=0.5, max_duration=8.0):
+    """Улучшенное извлечение фраз из сегментов с грамматической коррекцией"""
     phrases = []
     
     for i, segment in enumerate(segments):
@@ -218,37 +300,47 @@ def extract_phrases_from_segments(segments):
         end = segment['end']
         duration = end - start
         
-        # Пропускаем мусор
-        if is_garbage_text(text) or duration < 0.3:
+        # Пропускаем мусор и слишком короткие/длинные сегменты
+        if (is_garbage_text(text) or 
+            duration < min_duration or 
+            duration > max_duration):
             continue
         
-        # Очищаем текст (удаляем точки в конце)
+        # Очищаем и улучшаем текст
         cleaned_text = clean_subtitle_text(text)
         if not cleaned_text:
             continue
         
-        # Продлеваем время отображения субтитра
+        # Корректируем время отображения на основе содержания
         extended_end = end
         
-        # Если это последняя фраза или до следующей фразы большой промежуток
+        # Автоматически определяем оптимальное время отображения
+        word_count = len(cleaned_text.split())
+        base_duration = max(duration, word_count * 0.4)  # Минимум 0.4 сек на слово
+        
         if i == len(segments) - 1:
-            # Последняя фраза - продлеваем на 2 секунды
-            extended_end = end + 2.0
+            # Последняя фраза - продлеваем
+            extended_end = end + min(2.0, base_duration * 0.3)
         else:
             next_start = segments[i + 1]['start']
             gap = next_start - end
             
-            # Если промежуток между фразами больше 1.5 секунд, продлеваем текущую фразу
+            # Продлеваем если большой промежуток
             if gap > 1.5:
-                extended_end = end + min(gap * 0.7, 3.0)  # Продлеваем на 70% промежутка, но не более 3 секунд
+                extended_end = end + min(gap * 0.6, 3.0)
+            else:
+                extended_end = end + min(base_duration * 0.2, 1.0)
         
-        # Если предыдущая фраза близко по времени и короткая, объединяем
-        if phrases and (start - phrases[-1]['end']) < 0.8:
+        # Объединяем короткие последовательные фразы
+        if phrases and (start - phrases[-1]['end']) < 0.5:
             last_phrase = phrases[-1]
             combined_text = last_phrase['text'] + ' ' + cleaned_text
             
-            # Проверяем не слишком ли длинный текст
-            if len(combined_text) <= 60:
+            # Проверяем длину и логичность объединения
+            if (len(combined_text) <= 80 and 
+                len(combined_text.split()) <= 12 and
+                not re.search(r'[.!?]\s*[а-я]', last_phrase['text'])):  # Не объединяем разные предложения
+                
                 last_phrase['text'] = combined_text
                 last_phrase['end'] = extended_end
                 continue
@@ -337,9 +429,9 @@ def crop_to_shorts_format(clip, log_func):
     return final_clip
 
 def add_subtitles_to_clip_advanced(clip_path: str, settings: SubtitleSettings, log_func) -> str:
-    """Добавление субтитров фразами - по одной фразе за раз"""
+    """Добавление субтитров фразами с улучшенной грамматикой и синхронизацией по голосу"""
     start_time = time.time()
-    log_func(f"📝 Добавление субтитров фразами к {pathlib.Path(clip_path).name}", "INFO")
+    log_func(f"📝 Добавление улучшенных субтитров к {pathlib.Path(clip_path).name}", "INFO")
     
     # Загружаем модель Whisper
     try:
@@ -362,9 +454,21 @@ def add_subtitles_to_clip_advanced(clip_path: str, settings: SubtitleSettings, l
         log_func(f"❌ Ошибка транскрипции: {e}", "ERROR")
         return clip_path
     
-    # Извлекаем и объединяем фразы
+    # Детектируем речевую активность для точной синхронизации
+    speech_segments = []
+    try:
+        speech_segments = detect_speech_activity(clip_path)
+        log_func(f"🎤 Обнаружено {len(speech_segments)} сегментов речи", "INFO")
+    except Exception as e:
+        log_func(f"⚠️ Детектирование речи недоступно: {e}", "WARNING")
+    
+    # Извлекаем и улучшаем фразы
     phrases = extract_phrases_from_segments(segments)
-    log_func(f"💬 Извлечено {len(phrases)} фраз", "INFO")
+    log_func(f"💬 Извлечено {len(phrases)} улучшенных фраз", "INFO")
+    
+    # Логируем примеры улучшенных фраз
+    for i, phrase in enumerate(phrases[:3]):
+        log_func(f"📝 Фраза {i+1}: '{phrase['text']}'", "DEBUG")
     
     if not phrases:
         log_func("ℹ️ Не найдено фраз для субтитров", "INFO")
@@ -376,7 +480,7 @@ def add_subtitles_to_clip_advanced(clip_path: str, settings: SubtitleSettings, l
         original_w, original_h = video.size
         log_func(f"🎬 Видео загружено: {original_w}x{original_h}, длительность: {video.duration:.2f}с", "INFO")
         
-        # Обрезаем под Shorts формат (старая проверенная версия)
+        # Обрезаем под Shorts формат
         video = crop_to_shorts_format(video, log_func)
         video_w, video_h = video.size
         
@@ -384,18 +488,17 @@ def add_subtitles_to_clip_advanced(clip_path: str, settings: SubtitleSettings, l
         log_func(f"❌ Ошибка загрузки видео: {e}", "ERROR")
         return clip_path
     
-    # Создаем субтитры фразами
+    # Создаем субтитры фразами с синхронизацией по голосу
     try:
-        # Преобразуем phrases в формат segments для совместимости
         phrase_segments = [
             {'start': p['start'], 'end': p['end'], 'text': p['text']}
             for p in phrases
         ]
         
         subtitle_clips = create_phrase_subtitles(
-            phrase_segments, video_w, video_h, settings
+            phrase_segments, video_w, video_h, settings, speech_segments
         )
-        log_func(f"🎬 Создано {len(subtitle_clips)} субтитров-фраз", "INFO")
+        log_func(f"🎬 Создано {len(subtitle_clips)} синхронизированных субтитров", "INFO")
         
     except Exception as e:
         log_func(f"❌ Ошибка создания субтитров: {e}", "ERROR")
@@ -425,7 +528,7 @@ def add_subtitles_to_clip_advanced(clip_path: str, settings: SubtitleSettings, l
             final_video.close()
         
         process_time = time.time() - start_time
-        log_func(f"✅ Субтитры-фразы добавлены: {output_path.name} (время: {process_time:.1f}с)", "INFO")
+        log_func(f"✅ Улучшенные субтитры добавлены: {output_path.name} (время: {process_time:.1f}с)", "INFO")
         return str(output_path)
         
     except Exception as e:
