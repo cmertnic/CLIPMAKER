@@ -3,6 +3,14 @@ import subprocess
 import sys
 from config import setup_imagemagick
 
+try:
+    from subtitle_engine import UltimateSubtitleEngine
+    from audio_enhancer import AudioPreprocessor
+    SUBTITLE_IMPROVEMENTS_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Улучшенные субтитры недоступны: {e}")
+    SUBTITLE_IMPROVEMENTS_AVAILABLE = False
+
 def setup_environment():
     """Настройка окружения при первом запуске"""
     setup_file = "setup_complete.flag"

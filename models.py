@@ -17,7 +17,11 @@ class SubtitleSettings:
         self.position = data.get("position", "bottom")
         self.margin = data.get("margin", 100)
         self.alignment = data.get("alignment", "center")
-        self.whisper_model = data.get("whisper_model", "base")
+        self.whisper_model = data.get("whisper_model", "large")
+        self.subtitle_mode = "sentence"
+        self.use_enhanced_subtitles = True
+        self.preferred_subtitle_source = "auto"  # auto, youtube, whisper
+        self.audio_enhancement = True
         self.language = data.get("language", "ru")
         self.style = data.get("style", "boxed")
         self.line_spacing = data.get("line_spacing", 8)

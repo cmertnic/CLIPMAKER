@@ -11,7 +11,7 @@ from config import CFG
 from utils import log
 from models import ProcessingState, FrameSettings
 from frame_processor import crop_to_vertical_with_frame, crop_to_vertical
-from subtitle_engine import add_subtitles_to_clip_advanced
+from subtitle_engine import add_subtitles_to_clip  
 
 def safe_progress_bar(iterable, desc="", log_callback=None, progress_callback=None, total=None):
     """Безопасный прогресс-бар для exe и обычного Python"""
@@ -354,26 +354,31 @@ def process_video_thread(state: ProcessingState, progress_callback, log_callback
         state.is_processing = True
         state.start_time = time.time()
         state.progress = 0.0
-        state.current_stage = "Расширенный анализ видео"
+        state.current_stage = "Анализ видео"
         
-        log_callback("🚀 Начинаем расширенную обработку видео...", "INFO")
+        log_callback("🚀 Начинаем обработку видео...", "INFO")
         
         # Создаем директории
         from config import OUT, CFG
-        OUT.mkdir(exist_ok=True)
-        CFG["TEMP_DIR"].mkdir(exist_ok=True)
+        OUT.mkdir(exist_ok=True, parents=True)
+        CFG["TEMP_DIR"].mkdir(exist_ok=True, parents=True)
         
-        # Шаг 1: Расширенный анализ видео
-        progress_callback(0, "Поиск вирусных моментов...")
+        # Шаг 1: Анализ видео - ТОЛЬКО ДЛЯ ЛОКАЛЬНЫХ ФАЙЛОВ
+        progress_callback(0, "Поиск интересных моментов...")
+        
+        # Используем существующую функцию анализа
         moments = analyze_video_advanced(state.video_path, state.analysis_duration, log_callback, state, progress_callback)
         
         if state.is_stopped or not moments:
             log_callback("🛑 Обработка остановлена или моменты не найдены", "INFO")
+            state.is_processing = False
             return
         
         # Шаг 2: Создание клипов
-        state.current_stage = "Создание вирусных клипов"
+        state.current_stage = "Создание клипов"
         progress_callback(33.33, "Создание клипов...")
+        
+        # Используем прямую функцию создания клипов
         clips = create_clips_from_best_moments(
             state.video_path, moments, state.clip_count, state.clip_duration, 
             state.min_clip_duration, state.max_clip_duration, state.crop_to_shorts,
@@ -383,6 +388,7 @@ def process_video_thread(state: ProcessingState, progress_callback, log_callback
         
         if state.is_stopped or not clips:
             log_callback("🛑 Обработка остановлена или клипы не созданы", "INFO")
+            state.is_processing = False
             return
         
         # Шаг 3: Добавление субтитров
@@ -396,7 +402,8 @@ def process_video_thread(state: ProcessingState, progress_callback, log_callback
                     break
                     
                 try:
-                    new_clip_path = add_subtitles_to_clip_advanced(clip_path, state.subtitle_settings, log_callback)
+                    # ИСПРАВЛЕНО: используем простую функцию вместо advanced
+                    new_clip_path = add_subtitles_to_clip(clip_path, state.subtitle_settings, log_callback)
                     if new_clip_path != clip_path:
                         import os
                         if os.path.exists(clip_path):
@@ -432,3 +439,4 @@ def process_video_thread(state: ProcessingState, progress_callback, log_callback
     finally:
         state.is_processing = False
         state.is_paused = False
+        state.is_stopped = False

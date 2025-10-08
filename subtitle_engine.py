@@ -1,566 +1,460 @@
-import pathlib
-import time
-from config import CFG
-import whisper
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
-from utils import format_subtitle_text, log
-from models import SubtitleSettings
 import os
-import sys
 import re
-import random
+import torch
+import whisper
+from youtube_transcript_api import YouTubeTranscriptApi
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
-from typing import List, Tuple
+from moviepy.editor import TextClip, CompositeVideoClip, VideoFileClip
+from audio_enhancer import AudioPreprocessor
+from config import CFG
 
-def get_asset_path(filename):
-    """Получает правильный путь к файлам в exe и обычном режиме"""
-    if getattr(sys, 'frozen', False):
-        base_path = Path(sys._MEIPASS)
-    else:
-        base_path = Path(__file__).parent
+class SubtitlePostProcessor:
+    def __init__(self, language="ru"):
+        self.language = language
     
-    possible_paths = [
-        base_path / 'assets' / filename,
-        base_path / filename,
-        Path('assets') / filename,
-        Path(filename)
-    ]
+    def improve_subtitles(self, subtitles):
+        """Улучшает качество субтитров"""
+        improved_subtitles = []
+        
+        for i, subtitle in enumerate(subtitles):
+            original_text = subtitle['text']
+            improved_text = self._correct_text(original_text)
+            
+            # УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ: меньше объединяем субтитры
+            if i > 0 and self._should_merge(improved_subtitles[-1], subtitle):
+                merged = self._merge_subtitles(improved_subtitles[-1], subtitle)
+                improved_subtitles[-1] = merged
+            else:
+                subtitle['text'] = improved_text
+                improved_subtitles.append(subtitle)
+        
+        return improved_subtitles
     
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
+    def _correct_text(self, text):
+        """Корректирует текст"""
+        if not text:
+            return text
+        
+        # Убираем лишние пробелы
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Исправляем пунктуацию
+        text = re.sub(r'\s+([.,!?])', r'\1', text)
+        text = re.sub(r'([.,!?])([А-ЯA-Z])', r'\1 \2', text)
+        
+        return text
     
-    return None
+    def _should_merge(self, prev_sub, current_sub):
+        """Определяет, нужно ли объединять субтитры"""
+        time_gap = current_sub['start'] - prev_sub['end']
+        prev_text = prev_sub['text']
+        current_text = current_sub['text']
+        
+        # УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ: увеличиваем порог объединения
+        return (time_gap < 0.5 and  # было 0.3
+                len(prev_text + ' ' + current_text) < 60 and  # было 80
+                not prev_text.endswith(('.', '!', '?')))
+    
+    def _merge_subtitles(self, sub1, sub2):
+        """Объединяет два субтитра"""
+        return {
+            'text': sub1['text'] + ' ' + sub2['text'],
+            'start': sub1['start'],
+            'end': sub2['end'],
+            'duration': sub2['end'] - sub1['start']
+        }
 
-def get_safe_font_path(font_name):
-    """Безопасное получение пути к шрифту"""
-    if '.' not in font_name:
-        return font_name
+class UltimateSubtitleEngine:
+    def __init__(self):
+        self.whisper_engine = ImprovedWhisperEngine()
+        self.audio_processor = AudioPreprocessor()
+        self.post_processor = SubtitlePostProcessor()
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"🎯 Субтитры: используется устройство {self.device}")
     
-    asset_path = get_asset_path(font_name)
-    if asset_path and os.path.exists(asset_path):
-        return asset_path
-    
-    return "Arial"
-
-def improve_text_grammar(text):
-    """Улучшает грамматику текста"""
-    if not text:
-        return ""
-    
-    # Убираем лишние пробелы
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Исправляем распространенные ошибки
-    corrections = {
-        r'\bсщ\b': 'сч',
-        r'\bзщ\b': 'зч', 
-        r'\bжщ\b': 'жч',
-        r'\b([кст])([кст])\b': r'\1\2',  # двойные согласные
-        r'\b([а-я])\1+\b': r'\1',  # убираем повторяющиеся буквы
-    }
-    
-    for pattern, replacement in corrections.items():
-        text = re.sub(pattern, replacement, text)
-    
-    # Добавляем заглавные буквы в начале предложений
-    sentences = re.split(r'([.!?]+\s*)', text)
-    result = []
-    capitalize_next = True
-    
-    for part in sentences:
-        if capitalize_next and part.strip():
-            part = part[0].upper() + part[1:] if part else part
-            capitalize_next = False
-        if part.strip().endswith(('.', '!', '?')):
-            capitalize_next = True
-        result.append(part)
-    
-    text = ''.join(result)
-    
-    return text
-
-def clean_subtitle_text(text):
-    """Улучшенная очистка текста субтитров с грамматической коррекцией"""
-    if not text:
-        return ""
-    
-    # Удаляем лишние пробелы
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Удаляем лишние знаки препинания в конце
-    text = re.sub(r'[\.\!\?]+$', '', text)
-    
-    # Удаляем очевидный мусор
-    if re.match(r'^[\.\s!?,]+$', text):
-        return ""
-    
-    # Улучшаем грамматику
-    text = improve_text_grammar(text)
-    
-    # Убираем короткие бессмысленные фразы
-    meaningless_phrases = ['а', 'но', 'и', 'да', 'нет', 'ну', 'вот', 'это', 'то']
-    if text.lower() in meaningless_phrases:
-        return ""
-    
-    return text
-
-def is_garbage_text(text):
-    """Определяет, является ли текст мусором"""
-    if not text or len(text.strip()) < 2:
-        return True
-    
-    # Текст состоит в основном из пунктуации
-    clean_text = re.sub(r'[\.\s!?,]', '', text)
-    if len(clean_text) < 2:
-        return True
-    
-    # Проверяем на набор случайных символов
-    if re.match(r'^[а-я]*[a-z]+[а-я]*$', text.lower()):
-        return True
-    
-    return False
-
-def load_whisper_model_safe(model_name="base"):
-    """Безопасная загрузка модели Whisper"""
-    try:
-        model = whisper.load_model(model_name)
-        return model
-    except Exception as e:
-        raise Exception(f"❌ Ошибка загрузки Whisper модели: {e}")
-
-def transcribe_audio_with_word_timestamps(model, audio_path, language="ru"):
-    """Транскрипция с временными метками для каждого слова"""
-    try:
-        result = model.transcribe(
-            audio_path,
-            language=language if language != "auto" else "ru",
-            fp16=False,
-            verbose=None,
-            word_timestamps=True
-        )
-        return result
-    except Exception as e:
-        # Fallback на обычную транскрипцию
+    def get_subtitles(self, source: str, source_type: str = "local", language: str = "ru", 
+                     model_size: str = "large") -> Tuple[Optional[List[Dict]], str]:
+        """
+        Получает субтитры максимального качества
+        """
         try:
+            if source_type == "youtube":
+                subtitles, error = self._get_youtube_subtitles(source, language)
+            else:
+                subtitles, error = self._get_whisper_subtitles(source, language, model_size)
+            
+            if error or not subtitles:
+                return None, error
+            
+            # Пост-обработка
+            final_subtitles = self.post_processor.improve_subtitles(subtitles)
+            
+            for sub in final_subtitles:
+                sub['source'] = 'youtube' if source_type == "youtube" else 'whisper'
+            
+            print(f"✅ Получено {len(final_subtitles)} субтитров")
+            return final_subtitles, None
+            
+        except Exception as e:
+            return None, f"Ошибка получения субтитров: {e}"
+    
+    def _get_youtube_subtitles(self, youtube_url: str, language: str) -> Tuple[Optional[List[Dict]], str]:
+        """Получает субтитры с YouTube - ПРИОРИТЕТНЫЙ МЕТОД"""
+        try:
+            video_id = self._extract_video_id(youtube_url)
+            if not video_id:
+                return None, "Неверный URL YouTube"
+            
+            print(f"🎯 Получаем субтитры YouTube: {video_id}")
+            
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = None
+            
+            # 1. Пробуем прямые субтитры на нужном языке
+            try:
+                transcript = transcript_list.find_transcript([language])
+                print(f"✅ Найдены прямые субтитры на {language}")
+            except:
+                # 2. Пробуем автоматические субтитры
+                try:
+                    transcript = transcript_list.find_transcript([language, 'en'])
+                    print(f"✅ Найдены автоматические субтитры")
+                except:
+                    # 3. Пробуем любой доступный язык и переводим
+                    try:
+                        available_transcripts = list(transcript_list._manually_created_transcripts.values())
+                        if available_transcripts:
+                            transcript = available_transcripts[0]
+                            if language != transcript.language_code:
+                                transcript = transcript.translate(language)
+                            print(f"✅ Используем субтитры с переводом")
+                    except:
+                        pass
+            
+            if not transcript:
+                return None, "Не удалось найти подходящие субтитры"
+            
+            subtitles_data = transcript.fetch()
+            formatted_subtitles = []
+            
+            for item in subtitles_data:
+                clean_text = self._clean_youtube_text(item['text'])
+                # УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ: берем даже короткие субтитры
+                if clean_text and len(clean_text) >= 1:  # было > 1
+                    formatted_subtitles.append({
+                        'text': clean_text,
+                        'start': item['start'],
+                        'end': item['start'] + item['duration'],
+                        'duration': item['duration'],
+                        'confidence': 0.95
+                    })
+            
+            print(f"✅ Получено {len(formatted_subtitles)} субтитров с YouTube")
+            return formatted_subtitles, None
+            
+        except Exception as e:
+            print(f"❌ Ошибка YouTube субтитров: {e}")
+            return None, f"Ошибка YouTube: {e}"
+    
+    def _get_whisper_subtitles(self, audio_path: str, language: str, model_size: str) -> Tuple[Optional[List[Dict]], str]:
+        """Получает субтитры через Whisper (резервный метод)"""
+        try:
+            print("🔊 Используем Whisper как резервный метод...")
+            
+            # Улучшаем аудио
+            enhanced_audio = self.audio_processor.enhance_audio(audio_path)
+            
+            # Транскрибируем с УВЕЛИЧЕННОЙ ЧУВСТВИТЕЛЬНОСТЬЮ
+            subtitles = self.whisper_engine.transcribe_enhanced(
+                enhanced_audio, language, model_size, word_level=True  # Включаем word-level для большего количества субтитров
+            )
+            
+            # Очистка временных файлов
+            if enhanced_audio != audio_path and os.path.exists(enhanced_audio):
+                try:
+                    os.remove(enhanced_audio)
+                except:
+                    pass
+            
+            return subtitles, None
+            
+        except Exception as e:
+            return None, f"Ошибка Whisper: {e}"
+    
+    def _extract_video_id(self, url: str) -> Optional[str]:
+        """Извлекает ID видео из YouTube URL"""
+        patterns = [
+            r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?\n]+)',
+            r'youtube\.com\/embed\/([^&?\n]+)',
+            r'youtube\.com\/v\/([^&?\n]+)',
+            r'youtube\.com\/shorts\/([^&?\n]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        
+        return None
+    
+    def _clean_youtube_text(self, text: str) -> str:
+        """Очищает текст YouTube субтитров"""
+        if not text:
+            return ""
+        
+        # Удаляем [Музыка], [Аплодисменты] и т.д.
+        text = re.sub(r'\[.*?\]', '', text)
+        # Удаляем специальные символы
+        text = re.sub(r'[♪♫▁▏│]', '', text)
+        # Убираем лишние пробелы
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+
+class ImprovedWhisperEngine:
+    def __init__(self):
+        self.models = {}
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    def load_model(self, model_size="base", language="ru"):
+        """Загружает модель Whisper"""
+        model_key = f"{model_size}_{language}"
+        
+        if model_key in self.models:
+            return self.models[model_key]
+        
+        try:
+            print(f"🔄 Загружаем модель Whisper {model_size}...")
+            model = whisper.load_model(model_size, device=self.device)
+            self.models[model_key] = model
+            print(f"✅ Модель {model_size} загружена")
+            return model
+        except Exception as e:
+            print(f"❌ Ошибка загрузки {model_size}: {e}")
+            return None
+    
+    def transcribe_enhanced(self, audio_path, language="ru", model_size="base", word_level=False):
+        """Транскрибирует аудио с УВЕЛИЧЕННОЙ ЧУВСТВИТЕЛЬНОСТЬЮ"""
+        model = self.load_model(model_size, language)
+        if not model:
+            return []
+        
+        try:
+            # УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ: используем более чувствительные настройки
             result = model.transcribe(
-                audio_path,
-                language=language if language != "auto" else "ru",
-                fp16=False,
-                verbose=None
+                audio_path, 
+                language=language, 
+                word_timestamps=word_level,
+                no_speech_threshold=0.4,  # было 0.6 - меньше фильтруем тишину
+                logprob_threshold=-0.8,   # было -1.0 - больше принимаем
+                compression_ratio_threshold=2.0  # было 2.4 - меньше сжимаем
             )
-            return result
-        except Exception as e2:
-            raise Exception(f"❌ Ошибка транскрипции: {e2}")
-
-def ensure_even_dimensions(width, height):
-    """Убеждаемся, что ширина и высота четные числа"""
-    width = width if width % 2 == 0 else width - 1
-    height = height if height % 2 == 0 else height - 1
-    return int(width), int(height)
-
-def resize_to_even_dimensions(clip):
-    """Изменяет размер клипа до четных размеров"""
-    width, height = clip.size
-    new_width, new_height = ensure_even_dimensions(width, height)
+            return self._post_process_result(result, word_level)
+        except Exception as e:
+            print(f"❌ Ошибка транскрипции: {e}")
+            return []
     
-    if (new_width, new_height) != (width, height):
-        return clip.resize(newsize=(new_width, new_height))
-    return clip
+    def _post_process_result(self, result, word_level=False):
+        """Пост-обработка результатов с УВЕЛИЧЕННОЙ ЧУВСТВИТЕЛЬНОСТЬЮ"""
+        if word_level:
+            # Обработка на уровне слов для большего количества субтитров
+            segments = []
+            for segment in result.get("segments", []):
+                words = segment.get("words", [])
+                for word in words:
+                    text = word["word"].strip()
+                    if text and len(text) > 0:
+                        segments.append({
+                            'text': text,
+                            'start': word['start'],
+                            'end': word['end'],
+                            'duration': word['end'] - word['start'],
+                            'confidence': word.get('probability', 0.7)
+                        })
+        else:
+            # Обычная обработка сегментов
+            segments = result.get("segments", [])
+        
+        improved_segments = []
+        
+        for segment in segments:
+            text = segment["text"].strip()
+            # УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ: берем даже очень короткие тексты
+            if text and len(text) >= 1:  # было > 1
+                improved_segments.append({
+                    'text': text,
+                    'start': segment['start'],
+                    'end': segment['end'],
+                    'duration': segment['end'] - segment['start'],
+                    'confidence': segment.get('confidence', 0.7)  # было 0.8
+                })
+        
+        print(f"🔊 Whisper: найдено {len(improved_segments)} сегментов")
+        return improved_segments
 
-def safe_video_loading(clip_path: str):
-    """Безопасная загрузка видео с обработкой ошибок"""
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            video = VideoFileClip(clip_path, audio_fps=22050)
-            
-            # Проверяем корректность видео
-            if video.duration <= 0:
-                raise ValueError("Нулевая длительность видео")
+def add_subtitles_to_clip(clip_path: str, settings, log_func) -> str:
+    """Добавление субтитров к клипу - УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ"""
+    try:
+        log_func(f"📝 Добавление субтитров к {clip_path}", "INFO")
+        
+        # Создаем движок субтитров
+        subtitle_engine = UltimateSubtitleEngine()
+        
+        # Определяем тип источника
+        if clip_path.startswith(('http', 'www.', 'youtube.com', 'youtu.be')):
+            source_type = "youtube"
+            source_url = clip_path
+        else:
+            source_type = "local" 
+            source_url = clip_path
+        
+        # Получаем субтитры
+        subtitles, error = subtitle_engine.get_subtitles(
+            source_url, 
+            source_type,
+            getattr(settings, 'language', 'ru'),
+            getattr(settings, 'whisper_model', 'base')
+        )
+        
+        if error or not subtitles:
+            log_func(f"⚠️ Не удалось получить субтитры: {error}", "WARNING")
+            return clip_path
+        
+        log_func(f"✅ Получено {len(subtitles)} субтитров", "INFO")
+        
+        # Загружаем видео
+        video = VideoFileClip(clip_path)
+        video_w, video_h = video.size
+        
+        # Создаем субтитры
+        subtitle_clips = []
+        
+        for i, subtitle in enumerate(subtitles):
+            try:
+                text = subtitle['text'].strip()
+                if not text:
+                    continue
                 
-            video = resize_to_even_dimensions(video)
-            return video
+                # Форматируем текст
+                text = _format_text_to_lines(text, max_chars_per_line=40, max_lines=2)
+                
+                start_time = subtitle['start']
+                end_time = subtitle['end']
+                duration = end_time - start_time
+                
+                # УВЕЛИЧЕННАЯ ЧУВСТВИТЕЛЬНОСТЬ: показываем более короткие субтитры
+                if duration < 0.3 or duration > 15:  # было 0.5-10
+                    continue
+                
+                # Создаем текстовый клип
+                txt_clip = _create_text_clip(text, video_w, duration, settings)
+                if not txt_clip:
+                    continue
+                
+                # Позиционирование
+                pos_y = video_h - txt_clip.h - 50  # 50px от низа
+                pos_x = (video_w - txt_clip.w) / 2
+                
+                # Устанавливаем время и позицию
+                txt_clip = txt_clip.set_position((pos_x, pos_y))
+                txt_clip = txt_clip.set_start(start_time)
+                txt_clip = txt_clip.set_duration(duration)
+                
+                subtitle_clips.append(txt_clip)
+                log_func(f"🎬 Субтитр {i+1}: '{text}' | {start_time:.1f}-{end_time:.1f}с", "DEBUG")
+                
+            except Exception as e:
+                log_func(f"⚠️ Ошибка создания субтитра: {e}", "DEBUG")
+                continue
+        
+        if subtitle_clips:
+            # Композитим видео с субтитрами
+            final_video = CompositeVideoClip([video] + subtitle_clips)
             
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise e
-            time.sleep(0.5)
-            continue
-
-def detect_speech_activity(audio_path, threshold=0.01):
-    """Обнаружение речевой активности для точной синхронизации"""
-    try:
-        from pydub import AudioSegment
-        from pydub.silence import detect_nonsilent
-        
-        # Загружаем аудио
-        audio = AudioSegment.from_file(audio_path)
-        
-        # Обнаруживаем не-тихие сегменты (речь)
-        nonsilent_segments = detect_nonsilent(
-            audio, 
-            min_silence_len=100,  # 100ms тишины
-            silence_thresh=threshold * audio.dBFS  # Порог тишины
-        )
-        
-        # Конвертируем в секунды
-        speech_segments = [(start/1000, end/1000) for start, end in nonsilent_segments]
-        return speech_segments
-        
+            # Сохраняем результат
+            original_path = Path(clip_path)
+            output_path = original_path.parent / f"{original_path.stem}_with_subs.mp4"
+            
+            # Экспортируем видео
+            final_video.write_videofile(
+                str(output_path),
+                codec="libx264",
+                audio_codec="aac",
+                verbose=False,
+                logger=None,
+                threads=4
+            )
+            
+            # Закрываем клипы
+            video.close()
+            final_video.close()
+            for clip in subtitle_clips:
+                clip.close()
+            
+            log_func(f"✅ Добавлено {len(subtitle_clips)} субтитров: {output_path.name}", "INFO")
+            return str(output_path)
+        else:
+            log_func("⚠️ Не удалось создать ни одного субтитра", "WARNING")
+            video.close()
+            return clip_path
+            
     except Exception as e:
-        print(f"⚠️ Ошибка детектирования речи: {e}")
-        return []
+        log_func(f"❌ Ошибка добавления субтитров: {e}", "ERROR")
+        return clip_path
 
-def create_phrase_subtitles(segments, video_width: int, video_height: int, settings: SubtitleSettings, speech_segments=None) -> List[TextClip]:
-    """Создает субтитры фразами с синхронизацией по голосу"""
-    subtitle_clips = []
+def _format_text_to_lines(text, max_chars_per_line=40, max_lines=2):
+    """Форматирует текст в несколько строк"""
+    if len(text) <= max_chars_per_line:
+        return text
     
-    for i, segment in enumerate(segments):
-        start = segment["start"]
-        end = segment["end"]
-        text = segment["text"].strip()
-        
-        # Пропускаем слишком короткие или мусорные сегменты
-        duration = end - start
-        if duration < 0.3 or is_garbage_text(text):
-            continue
-        
-        # Очищаем и улучшаем текст
-        cleaned_text = clean_subtitle_text(text)
-        if not cleaned_text:
-            continue
-        
-        # Проверяем, есть ли речь в этом сегменте (если доступны данные о речи)
-        if speech_segments:
-            has_speech = any(
-                speech_start <= end and speech_end >= start 
-                for speech_start, speech_end in speech_segments
-            )
-            if not has_speech:
-                continue  # Пропускаем субтитры без речи
-        
-        try:
-            # Создаем субтитр для одной фразы
-            subtitle_clip = create_single_subtitle_clip(
-                cleaned_text, 
-                duration,
-                video_width, video_height, settings
-            )
-            subtitle_clip = subtitle_clip.set_start(start)
-            subtitle_clips.append(subtitle_clip)
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        if len(test_line) <= max_chars_per_line:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
             
-        except Exception as e:
-            continue
+            if len(lines) >= max_lines - 1:
+                if current_line:
+                    last_line = ' '.join(current_line)
+                    if len(last_line) > max_chars_per_line:
+                        last_line = last_line[:max_chars_per_line-3] + '...'
+                    lines.append(last_line)
+                break
     
-    return subtitle_clips
+    if current_line and len(lines) < max_lines:
+        lines.append(' '.join(current_line))
+    
+    return '\n'.join(lines)
 
-def create_single_subtitle_clip(text: str, duration: float, video_width: int, video_height: int, settings: SubtitleSettings) -> TextClip:
-    """Создание одного субтитра"""
+def _create_text_clip(text, video_width, duration, settings):
+    """Создает текстовый клип"""
     try:
-        # Форматируем текст (максимум 2 строки)
-        formatted_text = format_subtitle_text(text, settings.max_chars_per_line)
+        font_size = getattr(settings, 'font_size', 42)
+        font = getattr(settings, 'font', 'Arial-Bold')
         
-        # Получаем безопасный путь к шрифту
-        safe_font = get_safe_font_path(settings.font)
-        
-        # Создаем текстовый клип с белым текстом и тонкой черной обводкой для читаемости
         txt_clip = TextClip(
-            formatted_text,
-            fontsize=settings.font_size,
+            text,
+            fontsize=font_size,
             color='white',
-            font=safe_font,
-            stroke_color='black',  # Тонкая обводка для контраста
-            stroke_width=1.5,      # Улучшает читаемость
+            font=font,
+            stroke_color='black',
+            stroke_width=2,
             method='caption',
-            size=(video_width * 0.9, None)
+            size=(video_width * 0.9, None),
+            align='center'
         )
         
-        # Устанавливаем точную длительность
         txt_clip = txt_clip.set_duration(duration)
-        
-        # Позиционирование внизу с небольшим отступом
-        pos_y = video_height - txt_clip.h - settings.margin
-        pos_x = (video_width - txt_clip.w) / 2
-        
-        txt_clip = txt_clip.set_position((pos_x, pos_y))
-        
         return txt_clip
         
     except Exception as e:
-        raise Exception(f"Ошибка создания субтитра: {e}")
-
-def extract_phrases_from_segments(segments, min_duration=0.5, max_duration=8.0):
-    """Улучшенное извлечение фраз из сегментов с грамматической коррекцией"""
-    phrases = []
-    
-    for i, segment in enumerate(segments):
-        text = segment.get('text', '').strip()
-        start = segment['start']
-        end = segment['end']
-        duration = end - start
-        
-        # Пропускаем мусор и слишком короткие/длинные сегменты
-        if (is_garbage_text(text) or 
-            duration < min_duration or 
-            duration > max_duration):
-            continue
-        
-        # Очищаем и улучшаем текст
-        cleaned_text = clean_subtitle_text(text)
-        if not cleaned_text:
-            continue
-        
-        # Корректируем время отображения на основе содержания
-        extended_end = end
-        
-        # Автоматически определяем оптимальное время отображения
-        word_count = len(cleaned_text.split())
-        base_duration = max(duration, word_count * 0.4)  # Минимум 0.4 сек на слово
-        
-        if i == len(segments) - 1:
-            # Последняя фраза - продлеваем
-            extended_end = end + min(2.0, base_duration * 0.3)
-        else:
-            next_start = segments[i + 1]['start']
-            gap = next_start - end
-            
-            # Продлеваем если большой промежуток
-            if gap > 1.5:
-                extended_end = end + min(gap * 0.6, 3.0)
-            else:
-                extended_end = end + min(base_duration * 0.2, 1.0)
-        
-        # Объединяем короткие последовательные фразы
-        if phrases and (start - phrases[-1]['end']) < 0.5:
-            last_phrase = phrases[-1]
-            combined_text = last_phrase['text'] + ' ' + cleaned_text
-            
-            # Проверяем длину и логичность объединения
-            if (len(combined_text) <= 80 and 
-                len(combined_text.split()) <= 12 and
-                not re.search(r'[.!?]\s*[а-я]', last_phrase['text'])):  # Не объединяем разные предложения
-                
-                last_phrase['text'] = combined_text
-                last_phrase['end'] = extended_end
-                continue
-        
-        # Добавляем как новую фразу
-        phrases.append({
-            'text': cleaned_text,
-            'start': start,
-            'end': extended_end
-        })
-    
-    return phrases
-
-def safe_video_export(final_video, output_path, log_func):
-    """Безопасный экспорт видео с обработкой ошибок"""
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            # Убеждаемся, что финальное видео имеет четные размеры
-            final_video = resize_to_even_dimensions(final_video)
-            
-            # Используем многопоточность (все ядра кроме 1)
-            import multiprocessing
-            available_threads = max(multiprocessing.cpu_count() - 1, 1)
-            
-            log_func(f"⚡ Используется {available_threads} потоков для экспорта", "INFO")
-            
-            # Упрощенные настройки экспорта для стабильности
-            final_video.write_videofile(
-                str(output_path), 
-                codec="libx264", 
-                audio_codec="aac", 
-                verbose=False, 
-                logger=None,
-                threads=available_threads,  # Используем все ядра кроме 1
-                preset='fast',
-                ffmpeg_params=[
-                    '-pix_fmt', 'yuv420p',
-                    '-crf', '23',
-                    '-movflags', '+faststart',
-                    '-avoid_negative_ts', 'make_zero',
-                    '-max_muxing_queue_size', '1024'
-                ]
-            )
-            return True
-            
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise e
-            log_func(f"⚠️ Повторная попытка экспорта ({attempt + 1}/2)...", "WARNING")
-            time.sleep(1)
-            continue
-
-def crop_to_shorts_format(clip, log_func):
-    """Старая проверенная обрезка под вертикальный формат с solid рамками"""
-    width, height = clip.size
-    
-    log_func(f"📏 Исходное разрешение: {width}x{height}", "INFO")
-    
-    # Целевое соотношение для Shorts (9:16)
-    target_ratio = 9/16
-    current_ratio = width / height
-    
-    # Вычисляем новые размеры
-    if current_ratio > target_ratio:
-        # Видео слишком широкое - обрезаем по бокам
-        new_width = int(height * target_ratio)
-        new_height = height
-        x_center = width // 2
-        x1 = x_center - new_width // 2
-        x2 = x1 + new_width
-        cropped_clip = clip.crop(x1=x1, y1=0, x2=x2, y2=height)
-    else:
-        # Видео слишком высокое - обрезаем сверху и снизу
-        new_width = width
-        new_height = int(width / target_ratio)
-        y_center = height // 2
-        y1 = y_center - new_height // 2
-        y2 = y1 + new_height
-        cropped_clip = clip.crop(x1=0, y1=y1, x2=width, y2=y2)
-    
-    # Изменяем размер к стандартному вертикальному разрешению
-    final_clip = cropped_clip.resize(height=1920)
-    
-    log_func(f"🎯 Обрезка под Shorts: {final_clip.w}x{final_clip.h}", "INFO")
-    return final_clip
-
-def add_subtitles_to_clip_advanced(clip_path: str, settings: SubtitleSettings, log_func) -> str:
-    """Добавление субтитров фразами с улучшенной грамматикой и синхронизацией по голосу"""
-    start_time = time.time()
-    log_func(f"📝 Добавление улучшенных субтитров к {pathlib.Path(clip_path).name}", "INFO")
-    
-    # Загружаем модель Whisper
-    try:
-        model = whisper.load_model(settings.whisper_model)
-        log_func(f"🤖 Модель Whisper загружена: {settings.whisper_model}", "INFO")
-    except Exception as e:
-        log_func(f"❌ Ошибка загрузки модели Whisper: {e}", "ERROR")
-        return clip_path
-    
-    # Транскрибируем аудио
-    try:
-        result = transcribe_audio_with_word_timestamps(
-            model, clip_path, 
-            language=settings.language if settings.language != "auto" else None
-        )
-        segments = result["segments"]
-        log_func(f"📄 Транскрипция: {len(segments)} сегментов", "INFO")
-        
-    except Exception as e:
-        log_func(f"❌ Ошибка транскрипции: {e}", "ERROR")
-        return clip_path
-    
-    # Детектируем речевую активность для точной синхронизации
-    speech_segments = []
-    try:
-        speech_segments = detect_speech_activity(clip_path)
-        log_func(f"🎤 Обнаружено {len(speech_segments)} сегментов речи", "INFO")
-    except Exception as e:
-        log_func(f"⚠️ Детектирование речи недоступно: {e}", "WARNING")
-    
-    # Извлекаем и улучшаем фразы
-    phrases = extract_phrases_from_segments(segments)
-    log_func(f"💬 Извлечено {len(phrases)} улучшенных фраз", "INFO")
-    
-    # Логируем примеры улучшенных фраз
-    for i, phrase in enumerate(phrases[:3]):
-        log_func(f"📝 Фраза {i+1}: '{phrase['text']}'", "DEBUG")
-    
-    if not phrases:
-        log_func("ℹ️ Не найдено фраз для субтитров", "INFO")
-        return clip_path
-    
-    # Загружаем видео с безопасной обработкой
-    try:
-        video = safe_video_loading(clip_path)
-        original_w, original_h = video.size
-        log_func(f"🎬 Видео загружено: {original_w}x{original_h}, длительность: {video.duration:.2f}с", "INFO")
-        
-        # Обрезаем под Shorts формат
-        video = crop_to_shorts_format(video, log_func)
-        video_w, video_h = video.size
-        
-    except Exception as e:
-        log_func(f"❌ Ошибка загрузки видео: {e}", "ERROR")
-        return clip_path
-    
-    # Создаем субтитры фразами с синхронизацией по голосу
-    try:
-        phrase_segments = [
-            {'start': p['start'], 'end': p['end'], 'text': p['text']}
-            for p in phrases
-        ]
-        
-        subtitle_clips = create_phrase_subtitles(
-            phrase_segments, video_w, video_h, settings, speech_segments
-        )
-        log_func(f"🎬 Создано {len(subtitle_clips)} синхронизированных субтитров", "INFO")
-        
-    except Exception as e:
-        log_func(f"❌ Ошибка создания субтитров: {e}", "ERROR")
-        subtitle_clips = []
-    
-    # Композитим видео с субтитрами
-    try:
-        if subtitle_clips:
-            final_video = CompositeVideoClip([video] + subtitle_clips)
-            log_func(f"🎨 Композит: {len(subtitle_clips)} фраз добавлено", "INFO")
-        else:
-            final_video = video
-            log_func("⚠️ Субтитры не были созданы", "WARNING")
-        
-        # Сохраняем результат
-        original_path = pathlib.Path(clip_path)
-        output_path = original_path.parent / f"{original_path.stem}_with_subs.mp4"
-        
-        # Безопасный экспорт
-        safe_video_export(final_video, output_path, log_func)
-        
-        # Закрываем клипы
-        video.close()
-        for clip in subtitle_clips:
-            clip.close()
-        if subtitle_clips:
-            final_video.close()
-        
-        process_time = time.time() - start_time
-        log_func(f"✅ Улучшенные субтитры добавлены: {output_path.name} (время: {process_time:.1f}с)", "INFO")
-        return str(output_path)
-        
-    except Exception as e:
-        log_func(f"❌ Ошибка сохранения видео с субтитрами: {e}", "ERROR")
-        try:
-            video.close()
-            if 'final_video' in locals():
-                final_video.close()
-        except:
-            pass
-        
-        return clip_path
-
-def create_simple_compatible_video(input_path, log_func):
-    """Создает простую совместимую версию видео"""
-    try:
-        log_func("🔄 Создаем совместимую версию видео...", "INFO")
-        
-        video = safe_video_loading(input_path)
-        
-        # Обрезаем под Shorts формат
-        video = crop_to_shorts_format(video, log_func)
-        
-        original_path = pathlib.Path(input_path)
-        output_path = original_path.parent / f"{original_path.stem}_compatible.mp4"
-        
-        safe_video_export(video, output_path, log_func)
-        video.close()
-            
-        log_func(f"✅ Создана совместимая версия: {output_path.name}", "INFO")
-        return str(output_path)
-        
-    except Exception as e:
-        log_func(f"❌ Ошибка создания совместимой версии: {e}", "ERROR")
-        return input_path
+        print(f"❌ Ошибка создания текстового клипа: {e}")
+        return None

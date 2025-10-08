@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 from moviepy.editor import VideoFileClip, ColorClip, CompositeVideoClip
 from moviepy.video.fx.all import resize
-from subtitle_engine import crop_to_shorts_format
 from utils import hex_to_rgb, log
 from models import FrameSettings
 

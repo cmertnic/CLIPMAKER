@@ -389,6 +389,7 @@ class SubtitleSettingsDialog(tk.Toplevel):
         self.result = None
         self.destroy()
 
+
 class FrameSettingsDialog(tk.Toplevel):
     def __init__(self, parent, frame_settings: FrameSettings):
         super().__init__(parent)
